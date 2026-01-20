@@ -247,18 +247,6 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
           sessionModelUsage[modelKey].messages++
           sessionModelUsage[modelKey].cost += message.info.cost || 0
 
-          // Track agent usage from assistant message
-          const agentKey = message.info.agent
-          if (!sessionAgentUsage[agentKey]) {
-            sessionAgentUsage[agentKey] = {
-              messages: 0,
-              tokens: { input: 0, output: 0, reasoning: 0 },
-              cost: 0,
-            }
-          }
-          sessionAgentUsage[agentKey].messages++
-          sessionAgentUsage[agentKey].cost += message.info.cost || 0
-
           if (message.info.tokens) {
             sessionTokens.input += message.info.tokens.input || 0
             sessionTokens.output += message.info.tokens.output || 0
@@ -269,10 +257,26 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
             sessionModelUsage[modelKey].tokens.input += message.info.tokens.input || 0
             sessionModelUsage[modelKey].tokens.output +=
               (message.info.tokens.output || 0) + (message.info.tokens.reasoning || 0)
+          }
 
-            sessionAgentUsage[agentKey].tokens.input += message.info.tokens.input || 0
-            sessionAgentUsage[agentKey].tokens.output += message.info.tokens.output || 0
-            sessionAgentUsage[agentKey].tokens.reasoning += message.info.tokens.reasoning || 0
+          // Track agent usage from assistant message
+          const agentKey = message.info.agent
+          if (agentKey) {
+            if (!sessionAgentUsage[agentKey]) {
+              sessionAgentUsage[agentKey] = {
+                messages: 0,
+                tokens: { input: 0, output: 0, reasoning: 0 },
+                cost: 0,
+              }
+            }
+            sessionAgentUsage[agentKey].messages++
+            sessionAgentUsage[agentKey].cost += message.info.cost || 0
+
+            if (message.info.tokens) {
+              sessionAgentUsage[agentKey].tokens.input += message.info.tokens.input || 0
+              sessionAgentUsage[agentKey].tokens.output += message.info.tokens.output || 0
+              sessionAgentUsage[agentKey].tokens.reasoning += message.info.tokens.reasoning || 0
+            }
           }
         }
 
