@@ -31,6 +31,19 @@ interface SessionStats {
       cost: number
     }
   >
+  agentUsage: Record<
+    string,
+    {
+      messages: number
+      sessions: Set<string>
+      tokens: {
+        input: number
+        output: number
+        reasoning: number
+      }
+      cost: number
+    }
+  >
   dateRange: {
     earliest: number
     latest: number
@@ -57,6 +70,9 @@ export const StatsCommand = cmd({
       .option("models", {
         describe: "show model statistics (default: hidden). Pass a number to show top N, otherwise shows all",
       })
+      .option("agent", {
+        describe: "show agent statistics (default: hidden). Pass a number to show top N, otherwise shows all",
+      })
       .option("project", {
         describe: "filter by project (default: all projects, empty string: current project)",
         type: "string",
@@ -73,7 +89,14 @@ export const StatsCommand = cmd({
         modelLimit = args.models
       }
 
-      displayStats(stats, args.tools, modelLimit)
+      let agentLimit: number | undefined
+      if (args.agent === true) {
+        agentLimit = Infinity
+      } else if (typeof args.agent === "number") {
+        agentLimit = args.agent
+      }
+
+      displayStats(stats, args.tools, modelLimit, agentLimit)
     })
   },
 })
@@ -150,6 +173,7 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
     },
     toolUsage: {},
     modelUsage: {},
+    agentUsage: {},
     dateRange: {
       earliest: Date.now(),
       latest: Date.now(),
@@ -195,6 +219,18 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
           cost: number
         }
       > = {}
+      let sessionAgentUsage: Record<
+        string,
+        {
+          messages: number
+          tokens: {
+            input: number
+            output: number
+            reasoning: number
+          }
+          cost: number
+        }
+      > = {}
 
       for (const message of messages) {
         if (message.info.role === "assistant") {
@@ -211,6 +247,18 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
           sessionModelUsage[modelKey].messages++
           sessionModelUsage[modelKey].cost += message.info.cost || 0
 
+          // Track agent usage from assistant message
+          const agentKey = message.info.agent
+          if (!sessionAgentUsage[agentKey]) {
+            sessionAgentUsage[agentKey] = {
+              messages: 0,
+              tokens: { input: 0, output: 0, reasoning: 0 },
+              cost: 0,
+            }
+          }
+          sessionAgentUsage[agentKey].messages++
+          sessionAgentUsage[agentKey].cost += message.info.cost || 0
+
           if (message.info.tokens) {
             sessionTokens.input += message.info.tokens.input || 0
             sessionTokens.output += message.info.tokens.output || 0
@@ -221,6 +269,10 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
             sessionModelUsage[modelKey].tokens.input += message.info.tokens.input || 0
             sessionModelUsage[modelKey].tokens.output +=
               (message.info.tokens.output || 0) + (message.info.tokens.reasoning || 0)
+
+            sessionAgentUsage[agentKey].tokens.input += message.info.tokens.input || 0
+            sessionAgentUsage[agentKey].tokens.output += message.info.tokens.output || 0
+            sessionAgentUsage[agentKey].tokens.reasoning += message.info.tokens.reasoning || 0
           }
         }
 
@@ -238,6 +290,8 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
         sessionTotalTokens: sessionTokens.input + sessionTokens.output + sessionTokens.reasoning,
         sessionToolUsage,
         sessionModelUsage,
+        sessionAgentUsage,
+        sessionID: session.id,
         earliestTime: cutoffTime > 0 ? session.time.updated : session.time.created,
         latestTime: session.time.updated,
       }
@@ -275,6 +329,23 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
         stats.modelUsage[model].tokens.output += usage.tokens.output
         stats.modelUsage[model].cost += usage.cost
       }
+
+      for (const [agent, usage] of Object.entries(result.sessionAgentUsage)) {
+        if (!stats.agentUsage[agent]) {
+          stats.agentUsage[agent] = {
+            messages: 0,
+            sessions: new Set(),
+            tokens: { input: 0, output: 0, reasoning: 0 },
+            cost: 0,
+          }
+        }
+        stats.agentUsage[agent].messages += usage.messages
+        stats.agentUsage[agent].sessions.add(result.sessionID)
+        stats.agentUsage[agent].tokens.input += usage.tokens.input
+        stats.agentUsage[agent].tokens.output += usage.tokens.output
+        stats.agentUsage[agent].tokens.reasoning += usage.tokens.reasoning
+        stats.agentUsage[agent].cost += usage.cost
+      }
     }
   }
 
@@ -300,7 +371,7 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
   return stats
 }
 
-export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit?: number) {
+export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit?: number, agentLimit?: number) {
   const width = 56
 
   function renderRow(label: string, value: string): string {
@@ -353,6 +424,34 @@ export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit
       console.log(renderRow("  Messages", usage.messages.toLocaleString()))
       console.log(renderRow("  Input Tokens", formatNumber(usage.tokens.input)))
       console.log(renderRow("  Output Tokens", formatNumber(usage.tokens.output)))
+      console.log(renderRow("  Cost", `$${usage.cost.toFixed(4)}`))
+      console.log("├────────────────────────────────────────────────────────┤")
+    }
+    // Remove last separator and add bottom border
+    process.stdout.write("\x1B[1A") // Move up one line
+    console.log("└────────────────────────────────────────────────────────┘")
+  }
+  console.log()
+
+  // Agent Usage section
+  if (agentLimit !== undefined && Object.keys(stats.agentUsage).length > 0) {
+    const sortedAgents = Object.entries(stats.agentUsage).sort(([, a], [, b]) => b.messages - a.messages)
+    const agentsToDisplay = agentLimit === Infinity ? sortedAgents : sortedAgents.slice(0, agentLimit)
+
+    console.log("┌────────────────────────────────────────────────────────┐")
+    console.log("│                      AGENT USAGE                       │")
+    console.log("├────────────────────────────────────────────────────────┤")
+
+    for (const [agent, usage] of agentsToDisplay) {
+      const totalTokens = usage.tokens.input + usage.tokens.output + usage.tokens.reasoning
+      const avgTokensPerMessage = usage.messages > 0 ? totalTokens / usage.messages : 0
+      const avgTokensPerSession = usage.sessions.size > 0 ? totalTokens / usage.sessions.size : 0
+
+      console.log(`│ ${agent.padEnd(54)} │`)
+      console.log(renderRow("  Messages", usage.messages.toLocaleString()))
+      console.log(renderRow("  Sessions", usage.sessions.size.toLocaleString()))
+      console.log(renderRow("  Avg Tokens/Msg", formatNumber(Math.round(avgTokensPerMessage))))
+      console.log(renderRow("  Avg Tokens/Session", formatNumber(Math.round(avgTokensPerSession))))
       console.log(renderRow("  Cost", `$${usage.cost.toFixed(4)}`))
       console.log("├────────────────────────────────────────────────────────┤")
     }
