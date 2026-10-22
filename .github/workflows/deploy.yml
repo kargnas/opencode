@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.22.1"
 
       # Workaround for Pulumi version conflict:
       # GitHub runners have Pulumi 3.212.0+ pre-installed, which removed the -root flag
